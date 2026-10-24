@@ -44,21 +44,89 @@ function notify(title, body, file) {
   n.show();
 }
 
+// 이미지를 클립보드로 복사 (Electron 45+ ClipboardItem API). 인코딩된 PNG를 반환
+async function writeImageToClipboard(img) {
+  const png = img.toPNG();
+  await clipboard.write([
+    new ClipboardItem({
+      "image/png": new Blob([new Uint8Array(png)], { type: "image/png" }),
+    }),
+  ]);
+  return png;
+}
+
+const HISTORY_COUNT = 8;
+
+function recentCaptures() {
+  const dir = getSaveDir();
+  let names = [];
+  try {
+    names = fs.readdirSync(dir).filter((f) => f.endsWith(".png"));
+  } catch {
+    return [];
+  }
+  return names
+    .map((f) => {
+      const file = path.join(dir, f);
+      try {
+        return { file, mtime: fs.statSync(file).mtimeMs };
+      } catch {
+        return null;
+      }
+    })
+    .filter(Boolean)
+    .sort((a, b) => b.mtime - a.mtime)
+    .slice(0, HISTORY_COUNT);
+}
+
+function copyFileToClipboard(file) {
+  const img = nativeImage.createFromPath(file);
+  if (img.isEmpty()) {
+    notify("MyClip", "파일을 읽을 수 없어요.");
+    return;
+  }
+  writeImageToClipboard(img)
+    .then(() => notify("MyClip", `클립보드로 복사됨 · ${path.basename(file)}`))
+    .catch((err) => {
+      console.error("[myclip] 히스토리 복사 오류:", err);
+      dialog.showErrorBox("MyClip 오류", String((err && err.message) || err));
+    });
+}
+
+function buildTrayMenu() {
+  const template = [
+    { label: `영역 캡처  (${HOTKEY})`, click: startCapture },
+    { label: `창 캡처  (${WINDOW_HOTKEY})`, click: captureActiveWindow },
+  ];
+
+  const recent = recentCaptures();
+  if (recent.length > 0) {
+    template.push({ type: "separator" });
+    for (const r of recent) {
+      const label = path
+        .basename(r.file)
+        .replace(/^MyClip_/, "")
+        .replace(/\.png$/, "")
+        .slice(0, 45);
+      template.push({ label, click: () => copyFileToClipboard(r.file) });
+    }
+  }
+
+  template.push({ type: "separator" });
+  template.push({ label: "저장 폴더 열기", click: () => shell.openPath(getSaveDir()) });
+  template.push({ type: "separator" });
+  template.push({ label: "종료", role: "quit" });
+
+  tray.setContextMenu(Menu.buildFromTemplate(template));
+}
+
 function createTray() {
   const icon = nativeImage
     .createFromPath(path.join(__dirname, "assets", "icon.png"))
     .resize({ width: 16, height: 16 });
   tray = new Tray(icon);
   tray.setToolTip("MyClip");
-  tray.setContextMenu(
-    Menu.buildFromTemplate([
-      { label: `영역 캡처  (${HOTKEY})`, click: startCapture },
-      { label: `창 캡처  (${WINDOW_HOTKEY})`, click: captureActiveWindow },
-      { label: "저장 폴더 열기", click: () => shell.openPath(getSaveDir()) },
-      { type: "separator" },
-      { label: "종료", role: "quit" },
-    ])
-  );
+  buildTrayMenu();
 }
 
 function startCapture() {
@@ -115,13 +183,7 @@ function sanitizeLabel(title) {
 
 // 클립보드 복사 + 파일 저장 + 알림 (영역/창 캡처 공통)
 async function saveCapture(img, label) {
-  // Electron 45+: writeImage() 제거됨 — ClipboardItem + Blob로 PNG 복사
-  const png = img.toPNG();
-  await clipboard.write([
-    new ClipboardItem({
-      "image/png": new Blob([new Uint8Array(png)], { type: "image/png" }),
-    }),
-  ]);
+  const png = await writeImageToClipboard(img);
 
   const dir = getSaveDir();
   fs.mkdirSync(dir, { recursive: true });
@@ -131,6 +193,8 @@ async function saveCapture(img, label) {
   console.log("[myclip] 저장 완료:", file);
 
   notify("MyClip 캡처 완료", `클립보드에 복사됨 · ${file}`, file);
+
+  if (tray) buildTrayMenu();
 }
 
 async function captureAndSave(display, rect) {
@@ -338,7 +402,11 @@ ipcMain.on("selection-finished", (e, rect) => {
 
 ipcMain.on("selection-cancelled", () => closeOverlays());
 
-const gotLock = app.requestSingleInstanceLock();
+// 테스트 모드(MYCLIP_TEST_*)에서는 싱글 인스턴스 락을 우회해
+// 이미 실행 중인 앱 옆에서도 자동 테스트가 가능하게 한다
+const isTestMode =
+  process.env.MYCLIP_TEST_CAPTURE === "1" || process.env.MYCLIP_TEST_WINDOW === "1";
+const gotLock = isTestMode || app.requestSingleInstanceLock();
 if (!gotLock) {
   app.quit();
 } else {
@@ -360,9 +428,9 @@ if (!gotLock) {
       notify("MyClip", `단축키(${WINDOW_HOTKEY}) 등록에 실패했어요. 다른 앱과 겹치는지 확인해 주세요.`);
     }
 
-    // 자동 업데이트: 서명 없이 지원되는 Windows 패키징 빌드에서만 활성화.
-    // macOS는 애플 개발자 계정으로 서명·공증을 추가한 뒤 활성화한다.
-    if (app.isPackaged && process.platform === "win32") {
+    // 자동 업데이트: Windows는 항상, macOS는 서명·공증된 빌드에서만 동작.
+    // (미서명 macOS 빌드에서는 electron-updater가 검증에 실패하지만 조용히 무시됨)
+    if (app.isPackaged && (process.platform === "win32" || process.platform === "darwin")) {
       const { autoUpdater } = require("electron-updater");
       autoUpdater.checkForUpdatesAndNotify().catch(() => {});
     }

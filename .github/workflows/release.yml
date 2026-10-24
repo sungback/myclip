@@ -38,7 +38,23 @@ jobs:
 
       - run: npm ci
 
-      - run: npm exec electron-builder -- --publish never
+      # macOS: MAC_CERTS/APPLE_* 시크릿이 등록돼 있으면 서명+공증, 없으면 무서명으로 빌드
+      - name: Build (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          EXTRA=""
+          if [ -n "$APPLE_ID" ]; then EXTRA="--config.mac.notarize=true"; fi
+          npm exec electron-builder -- --publish never $EXTRA
+        env:
+          CSC_LINK: ${{ secrets.MAC_CERTS }}
+          CSC_KEY_PASSWORD: ${{ secrets.MAC_CERTS_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+
+      - name: Build (Windows)
+        if: runner.os == 'Windows'
+        run: npm exec electron-builder -- --publish never
 
       - uses: actions/upload-artifact@v4
         with:
