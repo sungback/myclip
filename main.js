@@ -190,7 +190,9 @@ async function captureAndSave(display, rect) {
 
 // ---- 창 캡처 (활성 창) ----
 
-// Windows: 전경 창의 HWND/제목/화면좌표(물리픽셀)를 PowerShell로 조회
+// Windows: 전경 창의 HWND/제목/화면좌표(물리픽셀)를 PowerShell로 조회.
+// PowerShell 5.1은 stdout을 시스템 코드페이지(한글 윈도우 CP949)로 인코딩하는데
+// Node는 UTF-8로 해석해서 한글 제목이 깨진다. Base64로 전송해 코드페이지 무관하게 처리.
 function getActiveWindowInfoWin() {
   const script = `
 Add-Type @"
@@ -209,7 +211,8 @@ $s = New-Object System.Text.StringBuilder 512
 [void][MCW]::GetWindowText($h, $s, 512)
 $r = New-Object MCW+RECT
 [void][MCW]::DwmGetWindowAttribute($h, 9, [ref]$r, 16)
-[pscustomobject]@{ hwnd = [int64]$h; title = $s.ToString(); x = $r.L; y = $r.T; w = ($r.R - $r.L); h = ($r.B - $r.T) } | ConvertTo-Json -Compress
+$json = [pscustomobject]@{ hwnd = [int64]$h; title = $s.ToString(); x = $r.L; y = $r.T; w = ($r.R - $r.L); h = ($r.B - $r.T) } | ConvertTo-Json -Compress
+[Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($json))
 `;
   return new Promise((resolve) => {
     execFile(
@@ -217,9 +220,10 @@ $r = New-Object MCW+RECT
       ["-NoProfile", "-NonInteractive", "-Command", script],
       { timeout: 3000 },
       (err, stdout) => {
-        if (err) return resolve(null);
+        if (err || !stdout.trim()) return resolve(null);
         try {
-          resolve(JSON.parse(stdout.trim()));
+          const json = Buffer.from(stdout.trim(), "base64").toString("utf8");
+          resolve(JSON.parse(json));
         } catch {
           resolve(null);
         }
