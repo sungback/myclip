@@ -1,0 +1,72 @@
+{
+  "name": "myclip",
+  "productName": "MyClip",
+  "version": "0.2.0",
+  "description": "단축키로 화면 영역을 캡처해 클립보드와 파일로 저장하는 맥/윈도우 앱",
+  "author": "MyClip",
+  "license": "UNLICENSED",
+  "main": "main.js",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/sungback/myclip"
+  },
+  "scripts": {
+    "start": "electron .",
+    "icon": "node scripts/gen-icon.js",
+    "dist": "electron-builder",
+    "dist:dir": "electron-builder --dir",
+    "release": "electron-builder --mac --win --publish always"
+  },
+  "build": {
+    "appId": "com.myclip.app",
+    "productName": "MyClip",
+    "icon": "build/icon.png",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "src/**/*",
+      "assets/**/*"
+    ],
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "sungback",
+        "repo": "myclip"
+      }
+    ],
+    "mac": {
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        }
+      ],
+      "category": "public.app-category.utilities",
+      "extendInfo": {
+        "NSScreenCaptureDescription": "화면 영역을 캡처하기 위해 화면 기록 권한이 필요합니다."
+      }
+    },
+    "win": {
+      "target": [
+        "nsis"
+      ]
+    },
+    "nsis": {
+      "oneClick": true,
+      "perMachine": false
+    }
+  },
+  "devDependencies": {
+    "electron": "^45.0.0",
+    "electron-builder": "^26.18.0"
+  },
+  "dependencies": {
+    "electron-updater": "^6.8.11"
+  }
+}

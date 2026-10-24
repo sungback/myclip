@@ -1,0 +1,395 @@
+const {
+  app,
+  globalShortcut,
+  BrowserWindow,
+  screen,
+  desktopCapturer,
+  clipboard,
+  ClipboardItem,
+  ipcMain,
+  Tray,
+  Menu,
+  Notification,
+  nativeImage,
+  shell,
+  dialog,
+} = require("electron");
+const path = require("node:path");
+const fs = require("node:fs");
+const { execFile } = require("node:child_process");
+
+const HOTKEY = "Alt+Shift+S";
+const WINDOW_HOTKEY = "Alt+Shift+W";
+const SAVE_DIR_NAME = "MyClip";
+
+let tray = null;
+let overlays = [];
+
+function getSaveDir() {
+  return path.join(app.getPath("pictures"), SAVE_DIR_NAME);
+}
+
+function timestamp() {
+  const d = new Date();
+  const p = (n) => String(n).padStart(2, "0");
+  return (
+    `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}` +
+    `_${p(d.getHours())}-${p(d.getMinutes())}-${p(d.getSeconds())}`
+  );
+}
+
+function notify(title, body, file) {
+  const n = new Notification({ title, body });
+  if (file) n.on("click", () => shell.showItemInFolder(file));
+  n.show();
+}
+
+function createTray() {
+  const icon = nativeImage
+    .createFromPath(path.join(__dirname, "assets", "icon.png"))
+    .resize({ width: 16, height: 16 });
+  tray = new Tray(icon);
+  tray.setToolTip("MyClip");
+  tray.setContextMenu(
+    Menu.buildFromTemplate([
+      { label: `영역 캡처  (${HOTKEY})`, click: startCapture },
+      { label: `창 캡처  (${WINDOW_HOTKEY})`, click: captureActiveWindow },
+      { label: "저장 폴더 열기", click: () => shell.openPath(getSaveDir()) },
+      { type: "separator" },
+      { label: "종료", role: "quit" },
+    ])
+  );
+}
+
+function startCapture() {
+  if (overlays.length > 0) return;
+
+  for (const display of screen.getAllDisplays()) {
+    const win = new BrowserWindow({
+      x: display.bounds.x,
+      y: display.bounds.y,
+      width: display.bounds.width,
+      height: display.bounds.height,
+      frame: false,
+      transparent: true,
+      resizable: false,
+      movable: false,
+      minimizable: false,
+      fullscreenable: false,
+      skipTaskbar: true,
+      hasShadow: false,
+      show: false,
+      webPreferences: {
+        preload: path.join(__dirname, "preload.js"),
+        contextIsolation: true,
+        nodeIntegration: false,
+        backgroundThrottling: false,
+      },
+    });
+
+    win.setAlwaysOnTop(true, "screen-saver");
+    win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+    win.loadFile(path.join(__dirname, "src", "overlay.html"));
+    win.once("ready-to-show", () => win.show());
+    win.on("closed", () => {
+      overlays = overlays.filter((w) => w !== win);
+    });
+    overlays.push(win);
+  }
+}
+
+function closeOverlays() {
+  for (const w of overlays) {
+    if (!w.isDestroyed()) w.destroy();
+  }
+  overlays = [];
+}
+
+function sanitizeLabel(title) {
+  if (!title) return "";
+  return String(title)
+    .replace(/[\\/:*?"<>|]/g, "")
+    .replace(/\s+/g, "_")
+    .slice(0, 30);
+}
+
+// 클립보드 복사 + 파일 저장 + 알림 (영역/창 캡처 공통)
+async function saveCapture(img, label) {
+  // Electron 45+: writeImage() 제거됨 — ClipboardItem + Blob로 PNG 복사
+  const png = img.toPNG();
+  await clipboard.write([
+    new ClipboardItem({
+      "image/png": new Blob([new Uint8Array(png)], { type: "image/png" }),
+    }),
+  ]);
+
+  const dir = getSaveDir();
+  fs.mkdirSync(dir, { recursive: true });
+  const base = label ? `MyClip_${label}_${timestamp()}` : `MyClip_${timestamp()}`;
+  const file = path.join(dir, `${base}.png`);
+  fs.writeFileSync(file, png);
+  console.log("[myclip] 저장 완료:", file);
+
+  notify("MyClip 캡처 완료", `클립보드에 복사됨 · ${file}`, file);
+}
+
+async function captureAndSave(display, rect) {
+  try {
+    // 오버레이 창이 파괴된 직후 화면에 남아 있을 수 있어 캡처 전 잠시 대기
+    await new Promise((r) => setTimeout(r, 150));
+
+    const scaleFactor = display.scaleFactor || 1;
+    const thumbnailSize = {
+      width: Math.round(display.bounds.width * scaleFactor),
+      height: Math.round(display.bounds.height * scaleFactor),
+    };
+    console.log("[myclip] 캡처 시작", { displayId: display.id, scaleFactor, rect, thumbnailSize });
+
+    const sources = await desktopCapturer.getSources({
+      types: ["screen"],
+      thumbnailSize,
+    });
+    console.log(
+      "[myclip] 화면 소스",
+      sources.map((s) => {
+        const t = s.thumbnail.getSize();
+        return `display_id=${s.display_id} ${t.width}x${t.height}`;
+      })
+    );
+
+    const source =
+      sources.find((s) => s.display_id === String(display.id)) || sources[0];
+    let img = source ? source.thumbnail : null;
+
+    if (!img || img.isEmpty()) {
+      console.error("[myclip] 캡처 실패: 화면 소스가 비어 있음 (화면 기록 권한 의심)");
+      dialog.showErrorBox(
+        "MyClip 캡처 실패",
+        "화면을 가져올 수 없어요.\n\n시스템 설정 → 개인정보 보호 및 보안 → 화면 기록에서 이 앱을 허용해 주세요. 개발 모드(npm start)라면 실행한 터미널 앱을 허용해야 하고, 허용 후에는 앱을 완전히 종료하고 다시 실행해야 합니다."
+      );
+      return;
+    }
+
+    // 오버레이 좌표(DIP)를 실제 캡처 이미지 해상도로 보정
+    const size = img.getSize();
+    const sx = size.width / display.bounds.width;
+    const sy = size.height / display.bounds.height;
+    img = img.crop({
+      x: Math.max(0, Math.round(rect.x * sx)),
+      y: Math.max(0, Math.round(rect.y * sy)),
+      width: Math.max(1, Math.round(rect.width * sx)),
+      height: Math.max(1, Math.round(rect.height * sy)),
+    });
+
+    await saveCapture(img);
+  } catch (err) {
+    console.error("[myclip] 오류:", err);
+    dialog.showErrorBox("MyClip 오류", String((err && err.message) || err));
+  }
+}
+
+// ---- 창 캡처 (활성 창) ----
+
+// Windows: 전경 창의 HWND/제목/화면좌표(물리픽셀)를 PowerShell로 조회
+function getActiveWindowInfoWin() {
+  const script = `
+Add-Type @"
+using System;
+using System.Text;
+using System.Runtime.InteropServices;
+public class MCW {
+  [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+  [DllImport("user32.dll")] public static extern int GetWindowText(IntPtr h, StringBuilder s, int n);
+  [DllImport("dwmapi.dll")] public static extern int DwmGetWindowAttribute(IntPtr h, int a, out RECT r, int c);
+  public struct RECT { public int L; public int T; public int R; public int B; }
+}
+"@
+$h = [MCW]::GetForegroundWindow()
+$s = New-Object System.Text.StringBuilder 512
+[void][MCW]::GetWindowText($h, $s, 512)
+$r = New-Object MCW+RECT
+[void][MCW]::DwmGetWindowAttribute($h, 9, [ref]$r, 16)
+[pscustomobject]@{ hwnd = [int64]$h; title = $s.ToString(); x = $r.L; y = $r.T; w = ($r.R - $r.L); h = ($r.B - $r.T) } | ConvertTo-Json -Compress
+`;
+  return new Promise((resolve) => {
+    execFile(
+      "powershell.exe",
+      ["-NoProfile", "-NonInteractive", "-Command", script],
+      { timeout: 3000 },
+      (err, stdout) => {
+        if (err) return resolve(null);
+        try {
+          resolve(JSON.parse(stdout.trim()));
+        } catch {
+          resolve(null);
+        }
+      }
+    );
+  });
+}
+
+// Windows 3차 폴백: 화면 전체 소스에서 창 bounds(물리픽셀)를 크롭.
+// 혼합 DPI 다중 모니터에서는 근사치일 수 있다.
+async function cropWindowFromScreen(info) {
+  const displays = screen.getAllDisplays();
+  const disp =
+    displays.find((d) => {
+      const px = d.bounds.x * d.scaleFactor;
+      const py = d.bounds.y * d.scaleFactor;
+      return (
+        info.x >= px &&
+        info.x < px + d.bounds.width * d.scaleFactor &&
+        info.y >= py &&
+        info.y < py + d.bounds.height * d.scaleFactor
+      );
+    }) || screen.getPrimaryDisplay();
+
+  const sf = disp.scaleFactor || 1;
+  const sources = await desktopCapturer.getSources({
+    types: ["screen"],
+    thumbnailSize: {
+      width: Math.round(disp.bounds.width * sf),
+      height: Math.round(disp.bounds.height * sf),
+    },
+  });
+  const src = sources.find((s) => s.display_id === String(disp.id)) || sources[0];
+  const img = src ? src.thumbnail : null;
+  if (!img || img.isEmpty()) return null;
+
+  const size = img.getSize();
+  const kx = size.width / disp.bounds.width;
+  const ky = size.height / disp.bounds.height;
+  const cropped = img.crop({
+    x: Math.max(0, Math.round((info.x / sf - disp.bounds.x) * kx)),
+    y: Math.max(0, Math.round((info.y / sf - disp.bounds.y) * ky)),
+    width: Math.max(1, Math.round((info.w / sf) * kx)),
+    height: Math.max(1, Math.round((info.h / sf) * ky)),
+  });
+  return cropped.isEmpty() ? null : cropped;
+}
+
+async function captureActiveWindow() {
+  try {
+    const sources = await desktopCapturer.getSources({
+      types: ["window"],
+      thumbnailSize: { width: 3840, height: 2160 },
+    });
+
+    let img = null;
+    let label = "";
+
+    if (process.platform === "darwin") {
+      // macOS: 창 소스가 전경창부터 정렬됨(실측 확인). 빈 제목 소스는 건너뛴다.
+      const src = sources.find((s) => s.name && !s.thumbnail.isEmpty());
+      if (src) {
+        img = src.thumbnail;
+        label = src.name;
+      }
+    } else if (process.platform === "win32") {
+      const info = await getActiveWindowInfoWin();
+      if (info) {
+        label = info.title || "";
+        const src =
+          sources.find((s) => s.id === `window:${info.hwnd}:0`) ||
+          (info.title && sources.find((s) => s.name === info.title)) ||
+          null;
+        if (src && !src.thumbnail.isEmpty()) {
+          img = src.thumbnail;
+        } else if (info.w > 0 && info.h > 0) {
+          img = await cropWindowFromScreen(info);
+        }
+      }
+    }
+
+    if (!img || img.isEmpty()) {
+      console.error("[myclip] 창 캡처 실패: 활성 창을 찾지 못함");
+      dialog.showErrorBox("MyClip 창 캡처 실패", "캡처할 활성 창을 찾지 못했어요.");
+      return;
+    }
+
+    console.log("[myclip] 창 캡처:", `"${label}"`, img.getSize());
+    await saveCapture(img, sanitizeLabel(label));
+  } catch (err) {
+    console.error("[myclip] 창 캡처 오류:", err);
+    dialog.showErrorBox("MyClip 오류", String((err && err.message) || err));
+  }
+}
+
+ipcMain.on("selection-started", (e) => {
+  // 한 모니터에서 드래그가 시작되면 나머지 모니터의 오버레이는 닫는다
+  for (const w of overlays) {
+    if (!w.isDestroyed() && w.webContents !== e.sender) w.destroy();
+  }
+  overlays = overlays.filter((w) => !w.isDestroyed());
+});
+
+ipcMain.on("selection-finished", (e, rect) => {
+  const win = BrowserWindow.fromWebContents(e.sender);
+  const display = win
+    ? screen.getDisplayMatching(win.getBounds())
+    : screen.getPrimaryDisplay();
+  closeOverlays();
+  captureAndSave(display, rect);
+});
+
+ipcMain.on("selection-cancelled", () => closeOverlays());
+
+const gotLock = app.requestSingleInstanceLock();
+if (!gotLock) {
+  app.quit();
+} else {
+  app.on("second-instance", () => {
+    // 이미 실행 중이면 캡처 모드로 대응하지 않고 무시
+  });
+
+  app.whenReady().then(() => {
+    if (process.platform === "darwin") app.dock.hide();
+    createTray();
+
+    const registered = globalShortcut.register(HOTKEY, startCapture);
+    if (!registered) {
+      notify("MyClip", `단축키(${HOTKEY}) 등록에 실패했어요. 다른 앱과 겹치는지 확인해 주세요.`);
+    }
+
+    const windowRegistered = globalShortcut.register(WINDOW_HOTKEY, captureActiveWindow);
+    if (!windowRegistered) {
+      notify("MyClip", `단축키(${WINDOW_HOTKEY}) 등록에 실패했어요. 다른 앱과 겹치는지 확인해 주세요.`);
+    }
+
+    // 자동 업데이트: 서명 없이 지원되는 Windows 패키징 빌드에서만 활성화.
+    // macOS는 애플 개발자 계정으로 서명·공증을 추가한 뒤 활성화한다.
+    if (app.isPackaged && process.platform === "win32") {
+      const { autoUpdater } = require("electron-updater");
+      autoUpdater.checkForUpdatesAndNotify().catch(() => {});
+    }
+
+    // 개발 디버깅용: MYCLIP_TEST_CAPTURE=1 로 실행하면 자동으로 고정 영역을 캡처한다
+    if (process.env.MYCLIP_TEST_CAPTURE === "1") {
+      setTimeout(() => {
+        const d = screen.getPrimaryDisplay();
+        console.log("[myclip] 자동 캡처 테스트 시작");
+        captureAndSave(d, { x: 50, y: 50, width: 300, height: 200 }).finally(() => {
+          console.log("[myclip] 자동 캡처 테스트 종료");
+          setTimeout(() => app.quit(), 800);
+        });
+      }, 2000);
+    }
+
+    // 개발 디버깅용: MYCLIP_TEST_WINDOW=1 로 실행하면 활성 창을 자동 캡처한다
+    if (process.env.MYCLIP_TEST_WINDOW === "1") {
+      setTimeout(() => {
+        console.log("[myclip] 창 자동 캡처 테스트 시작");
+        captureActiveWindow().finally(() => {
+          console.log("[myclip] 창 자동 캡처 테스트 종료");
+          setTimeout(() => app.quit(), 800);
+        });
+      }, 2000);
+    }
+  });
+
+  app.on("will-quit", () => globalShortcut.unregisterAll());
+
+  app.on("window-all-closed", () => {
+    // 트레이 상주 앱이라 종료하지 않는다
+  });
+}
