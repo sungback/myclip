@@ -45,10 +45,14 @@ MyClip(개발 중에는 실행한 터미널)을 허용해야 합니다.
 3. 로컬 태그로 릴리즈:
 
 ```bash
-npm version patch   # package.json 버전 자동 상승 (0.1.0 → 0.1.1)
+npm version patch   # package.json 버전 자동 상승 + 주석 태그 생성 (0.2.1 → 0.2.2)
 git push --follow-tags
 # v* 태그 푸시 → GitHub Actions가 맥/윈도우 설치파일을 Releases에 자동 업로드
 ```
+
+`npm version`은 주석 달린 태그를 만들어서 `--follow-tags`로 함께 올라갑니다.
+직접 `git tag v0.2.2` 같은 lightweight 태그를 만들었다면 `git push origin v0.2.2` 로
+태그를 따로 푸시해야 워크플로가 실행됩니다.
 
 별도 시크릿 설정이 필요 없습니다. GitHub Actions가 매 실행마다 자동 발급하는
 `GITHUB_TOKEN`으로 Releases 업로드를 처리하고, 공개 저장소라서 앱의 자동 업데이트도
