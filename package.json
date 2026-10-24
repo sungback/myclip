@@ -1,7 +1,7 @@
 {
   "name": "myclip",
   "productName": "MyClip",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "description": "단축키로 화면 영역을 캡처해 클립보드와 파일로 저장하는 맥/윈도우 앱",
   "author": "MyClip",
   "license": "UNLICENSED",

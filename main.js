@@ -25,6 +25,14 @@ const SAVE_DIR_NAME = "MyClip";
 let tray = null;
 let overlays = [];
 
+// 트레이 상주 앱은 어떤 비동기 오류로도 죽거나 오류창을 띄우지 않는다
+process.on("uncaughtException", (err) => {
+  console.error("[myclip] 미처리 예외(무시):", err);
+});
+process.on("unhandledRejection", (reason) => {
+  console.error("[myclip] 미처리 거부(무시):", reason);
+});
+
 function getSaveDir() {
   return path.join(app.getPath("pictures"), SAVE_DIR_NAME);
 }
@@ -95,6 +103,8 @@ function copyFileToClipboard(file) {
 
 function buildTrayMenu() {
   const template = [
+    { label: `MyClip v${app.getVersion()}`, enabled: false },
+    { type: "separator" },
     { label: `영역 캡처  (${HOTKEY})`, click: startCapture },
     { label: `창 캡처  (${WINDOW_HOTKEY})`, click: captureActiveWindow },
   ];
