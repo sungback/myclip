@@ -47,6 +47,7 @@
           ]
         }
       ],
+      "artifactName": "${productName}-${version}-${arch}.dmg",
       "category": "public.app-category.utilities",
       "extendInfo": {
         "NSScreenCaptureDescription": "화면 영역을 캡처하기 위해 화면 기록 권한이 필요합니다."
