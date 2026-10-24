@@ -429,9 +429,13 @@ if (!gotLock) {
     }
 
     // 자동 업데이트: Windows는 항상, macOS는 서명·공증된 빌드에서만 동작.
-    // (미서명 macOS 빌드에서는 electron-updater가 검증에 실패하지만 조용히 무시됨)
+    // 네트워크 오류(프록시·TLS 가로채기 등)는 알림 없이 로그만 남긴다 —
+    // 'error' 이벤트 리스너가 없으면 미처리 예외로 앱이 터진다.
     if (app.isPackaged && (process.platform === "win32" || process.platform === "darwin")) {
       const { autoUpdater } = require("electron-updater");
+      autoUpdater.on("error", (err) =>
+        console.error("[myclip] 업데이트 확인 실패(무시됨):", err && err.message)
+      );
       autoUpdater.checkForUpdatesAndNotify().catch(() => {});
     }
 
