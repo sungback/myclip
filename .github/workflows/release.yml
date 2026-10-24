@@ -5,13 +5,15 @@ on:
     tags: ["v*"]
   workflow_dispatch:
 
-# 순차 실행: 맥 잡이 릴리스를 생성·발행하고, 윈도우 잡이 같은 릴리스에 자산을 추가한다.
-# 병렬로 돌리면 두 잡이 각자 초안 릴리스를 만드는 경합이 생긴다.
+# 빌드 잡은 설치파일만 만들고(발행 없음) 아티팩트로 올린다.
+# 발행은 단일 release 잡이 한 번만 실행해 electron-builder의 멀티잡 릴리스 경합을 원천 차단한다.
 jobs:
-  release-mac:
-    permissions:
-      contents: write
-    runs-on: macos-latest
+  build:
+    name: build (${{ matrix.os }})
+    strategy:
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
 
@@ -22,25 +24,31 @@ jobs:
 
       - run: npm ci
 
-      - run: npm exec electron-builder -- --mac --publish always
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - run: npm exec electron-builder -- --publish never
 
-  release-win:
-    needs: release-mac
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ matrix.os }}
+          if-no-files-found: error
+          path: |
+            dist/*.dmg
+            dist/*.exe
+            dist/*.blockmap
+            dist/latest*.yml
+
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
     permissions:
       contents: write
-    runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
+      - uses: actions/download-artifact@v4
         with:
-          node-version: 22
-          cache: npm
+          merge-multiple: true
+          path: dist
 
-      - run: npm ci
-
-      - run: npm exec electron-builder -- --win --publish always
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true
