@@ -38,19 +38,33 @@ jobs:
 
       - run: npm ci
 
-      # macOS: MAC_CERTS/APPLE_* 시크릿이 등록돼 있으면 서명+공증, 없으면 무서명으로 빌드
+      # macOS: 서명·공증 시크릿이 등록돼 있을 때만 환경 변수를 내보낸다.
+      # (빈 값을 직접 설정하면 electron-builder가 CSC_LINK를 잘못된 경로로 해석해 빌드가 실패함)
+      - name: 서명 환경 변수 준비 (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          if [ -n "$MAC_CERTS_RAW" ]; then
+            printf 'CSC_LINK=%s\n' "$MAC_CERTS_RAW" >> "$GITHUB_ENV"
+            printf 'CSC_KEY_PASSWORD=%s\n' "$MAC_CERTS_PW_RAW" >> "$GITHUB_ENV"
+          fi
+          if [ -n "$APPLE_ID_RAW" ]; then
+            printf 'APPLE_ID=%s\n' "$APPLE_ID_RAW" >> "$GITHUB_ENV"
+            printf 'APPLE_APP_SPECIFIC_PASSWORD=%s\n' "$APPLE_APP_SPEC_PW_RAW" >> "$GITHUB_ENV"
+            printf 'APPLE_TEAM_ID=%s\n' "$APPLE_TEAM_ID_RAW" >> "$GITHUB_ENV"
+          fi
+        env:
+          MAC_CERTS_RAW: ${{ secrets.MAC_CERTS }}
+          MAC_CERTS_PW_RAW: ${{ secrets.MAC_CERTS_PASSWORD }}
+          APPLE_ID_RAW: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPEC_PW_RAW: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID_RAW: ${{ secrets.APPLE_TEAM_ID }}
+
       - name: Build (macOS)
         if: runner.os == 'macOS'
         run: |
           EXTRA=""
           if [ -n "$APPLE_ID" ]; then EXTRA="--config.mac.notarize=true"; fi
           npm exec electron-builder -- --publish never $EXTRA
-        env:
-          CSC_LINK: ${{ secrets.MAC_CERTS }}
-          CSC_KEY_PASSWORD: ${{ secrets.MAC_CERTS_PASSWORD }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
 
       - name: Build (Windows)
         if: runner.os == 'Windows'
