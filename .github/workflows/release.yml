@@ -5,24 +5,42 @@ on:
     tags: ["v*"]
   workflow_dispatch:
 
+# 순차 실행: 맥 잡이 릴리스를 생성·발행하고, 윈도우 잡이 같은 릴리스에 자산을 추가한다.
+# 병렬로 돌리면 두 잡이 각자 초안 릴리스를 만드는 경합이 생긴다.
 jobs:
-  release:
+  release-mac:
     permissions:
       contents: write
-    strategy:
-      matrix:
-        os: [macos-latest, windows-latest]
-    runs-on: ${{ matrix.os }}
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: npm
 
       - run: npm ci
 
-      - run: npm exec electron-builder -- --publish always
+      - run: npm exec electron-builder -- --mac --publish always
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  release-win:
+    needs: release-mac
+    permissions:
+      contents: write
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - run: npm exec electron-builder -- --win --publish always
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
