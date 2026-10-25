@@ -148,7 +148,7 @@ function buildTrayMenu() {
   }
 
   template.push({ type: "separator" });
-  template.push({ label: "업데이트 확인", click: () => checkForUpdatesNow() });
+  template.push({ label: "업데이트 확인", click: () => checkForUpdatesNow(true) });
   template.push({ label: "저장 폴더 열기", click: () => shell.openPath(getSaveDir()) });
   template.push({ type: "separator" });
   template.push({ label: "종료", role: "quit" });
@@ -452,8 +452,20 @@ function setupAutoUpdater() {
     debug: () => {},
   };
   autoUpdater.on("checking-for-update", () => log("업데이트 확인 시작"));
-  autoUpdater.on("update-available", (i) => log(`새 버전 발견: ${i && i.version}`));
-  autoUpdater.on("update-not-available", () => log("최신 버전 사용 중:", app.getVersion()));
+  autoUpdater.on("update-available", (i) => {
+    log(`새 버전 발견: ${i && i.version}`);
+    if (manualUpdateCheck) {
+      manualUpdateCheck = false;
+      notify("MyClip 업데이트", `새 버전 v${i && i.version}을 찾았어요. 다운로드를 시작해요.`);
+    }
+  });
+  autoUpdater.on("update-not-available", () => {
+    log("최신 버전 사용 중:", app.getVersion());
+    if (manualUpdateCheck) {
+      manualUpdateCheck = false;
+      notify("MyClip 업데이트", `최신 버전(v${app.getVersion()})을 사용 중이에요.`);
+    }
+  });
   autoUpdater.on("download-progress", (p) =>
     log(
       `다운로드 ${Math.round(p.percent)}% (${(p.transferred / 1048576).toFixed(1)}/${(
@@ -461,18 +473,32 @@ function setupAutoUpdater() {
       ).toFixed(1)}MB)`
     )
   );
-  autoUpdater.on("update-downloaded", (i) =>
-    log(`다운로드 완료: ${i.version} — 앱 종료 시 자동 설치됩니다`)
-  );
-  autoUpdater.on("error", (err) => log("업데이트 실패(무시됨):", err));
+  autoUpdater.on("update-downloaded", (i) => {
+    log(`다운로드 완료: ${i.version} — 앱 종료 시 자동 설치됩니다`);
+    notify("MyClip 업데이트", `v${i.version} 다운로드 완료 — MyClip을 종료하면 자동 설치돼요.`);
+  });
+  autoUpdater.on("error", (err) => {
+    log("업데이트 실패(무시됨):", err);
+    if (manualUpdateCheck) {
+      manualUpdateCheck = false;
+      notify("MyClip 업데이트", "확인에 실패했어요. 네트워크 상태를 확인해 주세요.");
+    }
+  });
 }
 
-function checkForUpdatesNow() {
+// 메뉴에서 직접 누른 확인에만 결과 알림을 띄운다 (주기 자동 검사는 조용히)
+let manualUpdateCheck = false;
+
+function checkForUpdatesNow(manual = false) {
   if (!updater) {
-    notify("MyClip", "이 실행 환경에서는 자동 업데이트를 지원하지 않아요.");
+    if (manual) notify("MyClip 업데이트", "이 실행 환경에서는 자동 업데이트를 지원하지 않아요.");
     return;
   }
-  updater.checkForUpdatesAndNotify().catch((e) => log("업데이트 확인 실패(무시됨):", e));
+  manualUpdateCheck = manual;
+  updater.checkForUpdates().catch((e) => {
+    log("업데이트 확인 실패(무시됨):", e);
+    if (manual) notify("MyClip 업데이트", "확인에 실패했어요. 네트워크 상태를 확인해 주세요.");
+  });
 }
 
 // 테스트 모드(MYCLIP_TEST_*)에서는 싱글 인스턴스 락을 우회해
