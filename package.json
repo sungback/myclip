@@ -1,7 +1,7 @@
 {
   "name": "myclip",
   "productName": "MyClip",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "description": "단축키로 화면 영역을 캡처해 클립보드와 파일로 저장하는 맥/윈도우 앱",
   "author": "MyClip",
   "license": "UNLICENSED",
@@ -45,9 +45,16 @@
             "arm64",
             "x64"
           ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
         }
       ],
-      "artifactName": "${productName}-${version}-${arch}.dmg",
+      "artifactName": "${productName}-${version}-${arch}.${ext}",
       "category": "public.app-category.utilities",
       "extendInfo": {
         "NSScreenCaptureDescription": "화면 영역을 캡처하기 위해 화면 기록 권한이 필요합니다."
