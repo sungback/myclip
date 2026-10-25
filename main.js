@@ -16,7 +16,8 @@ const {
 } = require("electron");
 const path = require("node:path");
 const fs = require("node:fs");
-const { execFile } = require("node:child_process");
+const os = require("node:os");
+const { execFile, spawn } = require("node:child_process");
 
 const HOTKEY = "Alt+Shift+S";
 const WINDOW_HOTKEY = "Alt+Shift+W";
@@ -445,6 +446,8 @@ function setupAutoUpdater() {
   if (!(app.isPackaged && (process.platform === "win32" || process.platform === "darwin"))) return;
   const { autoUpdater } = require("electron-updater");
   updater = autoUpdater;
+  // macOS는 Squirrel 설치 검증이 무서명 앱을 거부하므로 직접 교체 방식을 쓴다
+  autoUpdater.autoInstallOnAppQuit = process.platform !== "darwin";
   autoUpdater.logger = {
     info: (...a) => log("업데이터:", ...a),
     warn: (...a) => log("업데이터 경고:", ...a),
@@ -456,14 +459,14 @@ function setupAutoUpdater() {
     log(`새 버전 발견: ${i && i.version}`);
     if (manualUpdateCheck) {
       manualUpdateCheck = false;
-      notify("MyClip 업데이트", `새 버전 v${i && i.version}을 찾았어요. 다운로드를 시작해요.`);
+      showToast("MyClip 업데이트", `새 버전 v${i && i.version} 발견 — 다운로드를 시작해요.`);
     }
   });
   autoUpdater.on("update-not-available", () => {
     log("최신 버전 사용 중:", app.getVersion());
     if (manualUpdateCheck) {
       manualUpdateCheck = false;
-      notify("MyClip 업데이트", `최신 버전(v${app.getVersion()})을 사용 중이에요.`);
+      showToast("MyClip 업데이트", `최신 버전(v${app.getVersion()})을 사용 중이에요.`);
     }
   });
   autoUpdater.on("download-progress", (p) =>
@@ -474,14 +477,33 @@ function setupAutoUpdater() {
     )
   );
   autoUpdater.on("update-downloaded", (i) => {
-    log(`다운로드 완료: ${i.version} — 앱 종료 시 자동 설치됩니다`);
-    notify("MyClip 업데이트", `v${i.version} 다운로드 완료 — MyClip을 종료하면 자동 설치돼요.`);
+    log(`다운로드 완료: ${i.version}`);
+    if (process.platform === "darwin") {
+      // Squirrel 검증 우회 — 직접 교체 설치 후 재시작
+      showToast("MyClip 업데이트", `v${i.version} 설치 중 — 자동으로 재시작돼요.`);
+      const pendingDir = path.join(
+        app.getPath("home"), "Library", "Caches", "myclip-updater", "pending"
+      );
+      try {
+        const zips = fs
+          .readdirSync(pendingDir)
+          .filter((f) => f.endsWith(".zip"))
+          .map((f) => ({ f, m: fs.statSync(path.join(pendingDir, f)).mtimeMs }))
+          .sort((a, b) => b.m - a.m);
+        if (zips[0]) installDownloadedUpdateMac(path.join(pendingDir, zips[0].f));
+        else log("설치 실패: pending zip을 찾지 못함");
+      } catch (e) {
+        log("설치 실패:", e);
+      }
+    } else {
+      notify("MyClip 업데이트", `v${i.version} 다운로드 완료 — MyClip을 종료하면 자동 설치돼요.`);
+    }
   });
   autoUpdater.on("error", (err) => {
     log("업데이트 실패(무시됨):", err);
     if (manualUpdateCheck) {
       manualUpdateCheck = false;
-      notify("MyClip 업데이트", "확인에 실패했어요. 네트워크 상태를 확인해 주세요.");
+      showToast("MyClip 업데이트", "확인에 실패했어요. 네트워크 상태를 확인해 주세요.");
     }
   });
 }
@@ -489,22 +511,92 @@ function setupAutoUpdater() {
 // 메뉴에서 직접 누른 확인에만 결과 알림을 띄운다 (주기 자동 검사는 조용히)
 let manualUpdateCheck = false;
 
+// macOS 시스템 알림은 무서명 앱에서 조용히 차단될 수 있다 —
+// 업데이트 피드백은 권한이 필요 없는 자체 토스트 창으로 표시한다.
+let toastWin = null;
+function showToast(title, body) {
+  try {
+    if (toastWin && !toastWin.isDestroyed()) toastWin.destroy();
+    const area = screen.getPrimaryDisplay().workArea;
+    toastWin = new BrowserWindow({
+      width: 360,
+      height: 92,
+      frame: false,
+      transparent: true,
+      resizable: false,
+      movable: false,
+      minimizable: false,
+      focusable: false,
+      skipTaskbar: true,
+      hasShadow: false,
+      show: false,
+      webPreferences: { contextIsolation: true, nodeIntegration: false },
+    });
+    toastWin.setAlwaysOnTop(true, "screen-saver");
+    toastWin.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+    const html = `<!doctype html><html><body style="margin:0;overflow:hidden;font-family:-apple-system,'Apple SD Gothic Neo',sans-serif">
+<div style="background:rgba(28,28,34,.96);border-radius:12px;padding:14px 18px;color:#fff">
+<div style="font-size:13px;font-weight:600;margin-bottom:4px">${title}</div>
+<div style="font-size:12.5px;color:#d6d6de;line-height:1.45">${body}</div>
+</div></body></html>`;
+    toastWin.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(html));
+    toastWin.once("ready-to-show", () => {
+      toastWin.setPosition(area.x + area.width - 376, area.y + 44);
+      toastWin.show();
+      log("토스트 표시:", title, body);
+      setTimeout(() => {
+        if (toastWin && !toastWin.isDestroyed()) toastWin.destroy();
+      }, 3400);
+    });
+  } catch (err) {
+    log("토스트 오류:", err);
+  }
+}
+
+// macOS: Squirrel 설치기는 서명 검증 때문에 무서명 앱을 거부한다.
+// 받아둔 zip을 직접 풀어 .app을 교체하고 재시작한다 (검증 불필요).
+function installDownloadedUpdateMac(zipPath) {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "myclip-update-"));
+  log("직접 설치 시작:", zipPath);
+  execFile("ditto", ["-x", "-k", zipPath, tmp], (err) => {
+    const newApp = path.join(tmp, "MyClip.app");
+    if (err || !fs.existsSync(newApp)) {
+      log("업데이트 압축 해제 실패:", err);
+      showToast("MyClip 업데이트", "설치 파일 준비에 실패했어요. 릴리스 페이지에서 수동 설치해 주세요.");
+      return;
+    }
+    const appDir = path.resolve(process.execPath, "..", "..", "..");
+    const script = [
+      "sleep 1",
+      `rm -rf ${JSON.stringify(appDir)}`,
+      `mv ${JSON.stringify(newApp)} ${JSON.stringify(appDir)}`,
+      `xattr -cr ${JSON.stringify(appDir)}`,
+      `open -a ${JSON.stringify(appDir)}`,
+      `rm -rf ${JSON.stringify(tmp)}`,
+    ].join("; ");
+    spawn("/bin/bash", ["-c", script], { detached: true, stdio: "ignore" }).unref();
+    app.quit();
+  });
+}
+
 function checkForUpdatesNow(manual = false) {
   if (!updater) {
-    if (manual) notify("MyClip 업데이트", "이 실행 환경에서는 자동 업데이트를 지원하지 않아요.");
+    if (manual) showToast("MyClip 업데이트", "이 실행 환경에서는 자동 업데이트를 지원하지 않아요.");
     return;
   }
   manualUpdateCheck = manual;
   updater.checkForUpdates().catch((e) => {
     log("업데이트 확인 실패(무시됨):", e);
-    if (manual) notify("MyClip 업데이트", "확인에 실패했어요. 네트워크 상태를 확인해 주세요.");
+    if (manual) showToast("MyClip 업데이트", "확인에 실패했어요. 네트워크 상태를 확인해 주세요.");
   });
 }
 
 // 테스트 모드(MYCLIP_TEST_*)에서는 싱글 인스턴스 락을 우회해
 // 이미 실행 중인 앱 옆에서도 자동 테스트가 가능하게 한다
 const isTestMode =
-  process.env.MYCLIP_TEST_CAPTURE === "1" || process.env.MYCLIP_TEST_WINDOW === "1";
+  process.env.MYCLIP_TEST_CAPTURE === "1" ||
+  process.env.MYCLIP_TEST_WINDOW === "1" ||
+  process.env.MYCLIP_TEST_UPDATE === "1";
 const gotLock = isTestMode || app.requestSingleInstanceLock();
 if (!gotLock) {
   app.quit();
@@ -553,6 +645,14 @@ if (!gotLock) {
           console.log("[myclip] 창 자동 캡처 테스트 종료");
           setTimeout(() => app.quit(), 800);
         });
+      }, 2000);
+    }
+
+    // 개발 디버깅용: MYCLIP_TEST_UPDATE=1 로 실행하면 2초 뒤 수동 업데이트 확인을 흉내낸다
+    if (process.env.MYCLIP_TEST_UPDATE === "1") {
+      setTimeout(() => {
+        log("업데이트 테스트 모드: 수동 확인 호출");
+        checkForUpdatesNow(true);
       }, 2000);
     }
   });
