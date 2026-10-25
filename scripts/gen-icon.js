@@ -5,38 +5,85 @@ const path = require("node:path");
 const zlib = require("node:zlib");
 
 const SIZE = 1024;
-const BG = [79, 70, 229]; // indigo
-const FG = [255, 255, 255];
-
-// 라운드 사각형 내부 판정 (중앙 기준, 크기 s, 반지름 r)
-function inRoundedRect(x, y, s, r) {
-  const min = (SIZE - s) / 2;
-  const max = SIZE - min;
-  if (x < min || x > max || y < min || y > max) return false;
-  const cx = clamp(x, min + r, max - r);
-  const cy = clamp(y, min + r, max - r);
-  const dx = x - cx;
-  const dy = y - cy;
-  return dx * dx + dy * dy <= r * r;
-}
 
 function clamp(v, min, max) {
   return Math.max(min, Math.min(max, v));
 }
 
+// ---- 부드러운 가장자리를 위한 거리 함수들 ----
+
+// 점-선분 거리
+function sdSeg(px, py, ax, ay, bx, by) {
+  const pax = px - ax;
+  const pay = py - ay;
+  const bax = bx - ax;
+  const bay = by - ay;
+  const h = clamp((pax * bax + pay * bay) / (bax * bax + bay * bay), 0, 1);
+  return Math.hypot(pax - bax * h, pay - bay * h);
+}
+
+// 라운드 양끝 선분(캡슐)의 부호거리
+function sdCapsule(px, py, ax, ay, bx, by, r) {
+  return sdSeg(px, py, ax, ay, bx, by) - r;
+}
+
+// 라운드 사각형의 부호거리
+function sdRoundRect(px, py, cx, cy, w, h, r) {
+  const qx = Math.abs(px - cx) - (w / 2 - r);
+  const qy = Math.abs(py - cy) - (h / 2 - r);
+  const ax = Math.max(qx, 0);
+  const ay = Math.max(qy, 0);
+  return Math.min(Math.max(qx, qy), 0) + Math.hypot(ax, ay) - r;
+}
+
+// 부호거리 → 0~1 커버리지 (1px 페더로 안티에일리어싱)
+function cov(d) {
+  return clamp(0.5 - d, 0, 1);
+}
+
+// ---- 디자인 파라미터 ----
+const CORNER = 300; // 중앙에서 뷰파인더 코너까지 거리
+const ARM = 190; // 브래킷 팔 길이
+const CAP_R = 25; // 브래킥 반두께
+const DOT_R = 105; // 중앙 셔터 점 반지름
+const BG_TOP = [79, 70, 229]; // indigo
+const BG_BOTTOM = [124, 58, 237]; // violet
+
 function pixel(x, y) {
-  // 배경: 전체 라운드 사각형
-  if (!inRoundedRect(x, y, SIZE, 224)) return [0, 0, 0, 0];
-  // 흰색 프레임(뷰파인더) + 안쪽은 배경색 유지
-  const ringOuter = inRoundedRect(x, y, 560, 120);
-  const ringInner = inRoundedRect(x, y, 448, 64);
-  if (ringOuter && !ringInner) return FG;
-  // 중앙 점
-  const c = SIZE / 2;
-  const dx = x - c;
-  const dy = y - c;
-  if (dx * dx + dy * dy <= 80 * 80) return FG;
-  return BG;
+  // 배경 실루엣 (macOS 라운드 정사각형)
+  const aBg = cov(sdRoundRect(x, y, SIZE / 2, SIZE / 2, 824, 824, 228));
+  if (aBg <= 0) return [0, 0, 0, 0];
+
+  // 세로 그라디언트 배경색
+  const t = y / SIZE;
+  let r = BG_TOP[0] + (BG_BOTTOM[0] - BG_TOP[0]) * t;
+  let g = BG_TOP[1] + (BG_BOTTOM[1] - BG_TOP[1]) * t;
+  let b = BG_TOP[2] + (BG_BOTTOM[2] - BG_TOP[2]) * t;
+
+  // 뷰파인더 브래킷 4개 (각 코너에서 중앙 방향으로 팔 2개)
+  let d = Infinity;
+  for (const [sx, sy] of [
+    [-1, -1],
+    [1, -1],
+    [-1, 1],
+    [1, 1],
+  ]) {
+    const px = SIZE / 2 + sx * CORNER;
+    const py = SIZE / 2 + sy * CORNER;
+    d = Math.min(d, sdCapsule(x, y, px, py, px - sx * ARM, py, CAP_R));
+    d = Math.min(d, sdCapsule(x, y, px, py, px, py - sy * ARM, CAP_R));
+  }
+
+  // 중앙 셔터 점
+  d = Math.min(d, Math.hypot(x - SIZE / 2, y - SIZE / 2) - DOT_R);
+
+  // 흰색 도형 합성
+  const w = cov(d);
+  r = r * (1 - w) + 255 * w;
+  g = g * (1 - w) + 255 * w;
+  b = b * (1 - w) + 255 * w;
+
+  return [Math.round(r), Math.round(g), Math.round(b), Math.round(aBg * 255)];
 }
 
 // ---- 최소 PNG 인코더 ----
