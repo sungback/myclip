@@ -76,6 +76,7 @@ jobs:
           if-no-files-found: error
           path: |
             dist/*.dmg
+            dist/*.zip
             dist/*.exe
             dist/*.blockmap
             dist/latest*.yml
