@@ -27,11 +27,35 @@ let overlays = [];
 
 // 트레이 상주 앱은 어떤 비동기 오류로도 죽거나 오류창을 띄우지 않는다
 process.on("uncaughtException", (err) => {
-  console.error("[myclip] 미처리 예외(무시):", err);
+  log("미처리 예외(무시):", err);
 });
 process.on("unhandledRejection", (reason) => {
-  console.error("[myclip] 미처리 거부(무시):", reason);
+  log("미처리 거부(무시):", reason);
 });
+
+// GUI로 실행된 앱은 stdout이 /dev/null로 가서 콘솔 로그가 사라진다.
+// 진단을 위해 모든 [myclip] 로그를 파일에도 남긴다 (userData/myclip.log)
+let logFilePath = null;
+function log(...args) {
+  console.log("[myclip]", ...args);
+  try {
+    if (!logFilePath) {
+      try {
+        logFilePath = app.getPath("log");
+      } catch {
+        // getPath("log")는 로그 디렉토리가 없으면 예외를 던진다 — userData로 대체
+        logFilePath = path.join(app.getPath("userData"), "myclip.log");
+      }
+    }
+    const line = `[${new Date().toISOString()}] ${args
+      .map((a) => (a instanceof Error ? a.stack || a.message : typeof a === "object" ? JSON.stringify(a) : String(a)))
+      .join(" ")}\n`;
+    fs.mkdirSync(path.dirname(logFilePath), { recursive: true });
+    fs.appendFileSync(logFilePath, line);
+  } catch {
+    // 로깅 실패는 앱 동작에 영향 주지 않는다
+  }
+}
 
 function getSaveDir() {
   return path.join(app.getPath("pictures"), SAVE_DIR_NAME);
@@ -200,7 +224,7 @@ async function saveCapture(img, label) {
   const base = label ? `MyClip_${label}_${timestamp()}` : `MyClip_${timestamp()}`;
   const file = path.join(dir, `${base}.png`);
   fs.writeFileSync(file, png);
-  console.log("[myclip] 저장 완료:", file);
+  log("저장 완료:", file);
 
   notify("MyClip 캡처 완료", `클립보드에 복사됨 · ${file}`, file);
 
@@ -426,6 +450,7 @@ if (!gotLock) {
 
   app.whenReady().then(() => {
     if (process.platform === "darwin") app.dock.hide();
+    log("앱 시작, 버전:", app.getVersion(), "패키지:", app.isPackaged);
     createTray();
 
     const registered = globalShortcut.register(HOTKEY, startCapture);
@@ -438,15 +463,27 @@ if (!gotLock) {
       notify("MyClip", `단축키(${WINDOW_HOTKEY}) 등록에 실패했어요. 다른 앱과 겹치는지 확인해 주세요.`);
     }
 
-    // 자동 업데이트: Windows는 항상, macOS는 서명·공증된 빌드에서만 동작.
-    // 네트워크 오류(프록시·TLS 가로채기 등)는 알림 없이 로그만 남긴다 —
-    // 'error' 이벤트 리스너가 없으면 미처리 예외로 앱이 터진다.
+    // 자동 업데이트: Windows는 항상, macOS는 zip 아티팩트 기반으로 동작(무서명 가능).
+    // 모든 과정을 파일 로그로 남겨 진단 가능하게 한다.
     if (app.isPackaged && (process.platform === "win32" || process.platform === "darwin")) {
       const { autoUpdater } = require("electron-updater");
-      autoUpdater.on("error", (err) =>
-        console.error("[myclip] 업데이트 확인 실패(무시됨):", err && err.message)
+      autoUpdater.logger = {
+        info: (...a) => log("업데이터:", ...a),
+        warn: (...a) => log("업데이터 경고:", ...a),
+        error: (...a) => log("업데이터 오류:", ...a),
+        debug: (...a) => {},
+      };
+      autoUpdater.on("checking-for-update", () => log("업데이트 확인 시작"));
+      autoUpdater.on("update-available", (i) => log(`새 버전 발견: ${i && i.version}`));
+      autoUpdater.on("update-not-available", () => log("최신 버전 사용 중:", app.getVersion()));
+      autoUpdater.on("download-progress", (p) =>
+        log(`다운로드 ${Math.round(p.percent)}% (${(p.transferred / 1048576).toFixed(1)}/${(p.total / 1048576).toFixed(1)}MB)`)
       );
-      autoUpdater.checkForUpdatesAndNotify().catch(() => {});
+      autoUpdater.on("update-downloaded", (i) =>
+        log(`다운로드 완료: ${i.version} — 앱 종료 시 자동 설치됩니다`)
+      );
+      autoUpdater.on("error", (err) => log("업데이트 실패(무시됨):", err));
+      autoUpdater.checkForUpdatesAndNotify().catch((e) => log("업데이트 확인 실패(무시됨):", e));
     }
 
     // 개발 디버깅용: MYCLIP_TEST_CAPTURE=1 로 실행하면 자동으로 고정 영역을 캡처한다
