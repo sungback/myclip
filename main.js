@@ -24,6 +24,7 @@ const SAVE_DIR_NAME = "MyClip";
 
 let tray = null;
 let overlays = [];
+let updater = null;
 
 // 트레이 상주 앱은 어떤 비동기 오류로도 죽거나 오류창을 띄우지 않는다
 process.on("uncaughtException", (err) => {
@@ -147,6 +148,7 @@ function buildTrayMenu() {
   }
 
   template.push({ type: "separator" });
+  template.push({ label: "업데이트 확인", click: () => checkForUpdatesNow() });
   template.push({ label: "저장 폴더 열기", click: () => shell.openPath(getSaveDir()) });
   template.push({ type: "separator" });
   template.push({ label: "종료", role: "quit" });
@@ -436,6 +438,43 @@ ipcMain.on("selection-finished", (e, rect) => {
 
 ipcMain.on("selection-cancelled", () => closeOverlays());
 
+// ---- 자동 업데이트 ----
+// Windows는 항상, macOS는 zip 아티팩트 기반으로 동작(무서명 가능).
+// 모든 과정을 파일 로그로 남겨 진단 가능하게 한다.
+function setupAutoUpdater() {
+  if (!(app.isPackaged && (process.platform === "win32" || process.platform === "darwin"))) return;
+  const { autoUpdater } = require("electron-updater");
+  updater = autoUpdater;
+  autoUpdater.logger = {
+    info: (...a) => log("업데이터:", ...a),
+    warn: (...a) => log("업데이터 경고:", ...a),
+    error: (...a) => log("업데이터 오류:", ...a),
+    debug: () => {},
+  };
+  autoUpdater.on("checking-for-update", () => log("업데이트 확인 시작"));
+  autoUpdater.on("update-available", (i) => log(`새 버전 발견: ${i && i.version}`));
+  autoUpdater.on("update-not-available", () => log("최신 버전 사용 중:", app.getVersion()));
+  autoUpdater.on("download-progress", (p) =>
+    log(
+      `다운로드 ${Math.round(p.percent)}% (${(p.transferred / 1048576).toFixed(1)}/${(
+        p.total / 1048576
+      ).toFixed(1)}MB)`
+    )
+  );
+  autoUpdater.on("update-downloaded", (i) =>
+    log(`다운로드 완료: ${i.version} — 앱 종료 시 자동 설치됩니다`)
+  );
+  autoUpdater.on("error", (err) => log("업데이트 실패(무시됨):", err));
+}
+
+function checkForUpdatesNow() {
+  if (!updater) {
+    notify("MyClip", "이 실행 환경에서는 자동 업데이트를 지원하지 않아요.");
+    return;
+  }
+  updater.checkForUpdatesAndNotify().catch((e) => log("업데이트 확인 실패(무시됨):", e));
+}
+
 // 테스트 모드(MYCLIP_TEST_*)에서는 싱글 인스턴스 락을 우회해
 // 이미 실행 중인 앱 옆에서도 자동 테스트가 가능하게 한다
 const isTestMode =
@@ -463,28 +502,10 @@ if (!gotLock) {
       notify("MyClip", `단축키(${WINDOW_HOTKEY}) 등록에 실패했어요. 다른 앱과 겹치는지 확인해 주세요.`);
     }
 
-    // 자동 업데이트: Windows는 항상, macOS는 zip 아티팩트 기반으로 동작(무서명 가능).
-    // 모든 과정을 파일 로그로 남겨 진단 가능하게 한다.
-    if (app.isPackaged && (process.platform === "win32" || process.platform === "darwin")) {
-      const { autoUpdater } = require("electron-updater");
-      autoUpdater.logger = {
-        info: (...a) => log("업데이터:", ...a),
-        warn: (...a) => log("업데이터 경고:", ...a),
-        error: (...a) => log("업데이터 오류:", ...a),
-        debug: (...a) => {},
-      };
-      autoUpdater.on("checking-for-update", () => log("업데이트 확인 시작"));
-      autoUpdater.on("update-available", (i) => log(`새 버전 발견: ${i && i.version}`));
-      autoUpdater.on("update-not-available", () => log("최신 버전 사용 중:", app.getVersion()));
-      autoUpdater.on("download-progress", (p) =>
-        log(`다운로드 ${Math.round(p.percent)}% (${(p.transferred / 1048576).toFixed(1)}/${(p.total / 1048576).toFixed(1)}MB)`)
-      );
-      autoUpdater.on("update-downloaded", (i) =>
-        log(`다운로드 완료: ${i.version} — 앱 종료 시 자동 설치됩니다`)
-      );
-      autoUpdater.on("error", (err) => log("업데이트 실패(무시됨):", err));
-      autoUpdater.checkForUpdatesAndNotify().catch((e) => log("업데이트 확인 실패(무시됨):", e));
-    }
+    // 자동 업데이트: 시작 시 1회 + 6시간마다 + 트레이 메뉴 수동 확인
+    setupAutoUpdater();
+    checkForUpdatesNow();
+    setInterval(checkForUpdatesNow, 6 * 60 * 60 * 1000);
 
     // 개발 디버깅용: MYCLIP_TEST_CAPTURE=1 로 실행하면 자동으로 고정 영역을 캡처한다
     if (process.env.MYCLIP_TEST_CAPTURE === "1") {
